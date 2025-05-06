@@ -13,9 +13,9 @@ const pool = new Pool({
 });
 
 // Ethers.js setup
-tconst provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
-const wallet    = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-const token     = new ethers.Contract(
+const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
+const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+const token = new ethers.Contract(
   process.env.TOKEN_ADDRESS,
   [
     "function transfer(address to,uint256 amount) returns (bool)",
@@ -26,45 +26,36 @@ const token     = new ethers.Contract(
 
 app.use(express.json());
 
-// Main Frame endpoint
 app.post('/api/frame', async (req, res) => {
   try {
     console.log('▶️ Payload:', JSON.stringify(req.body));
     const { fid, buttonIndex, button_index, inputText, input_text } = req.body;
-    if (!fid) {
-      return res.status(400).send('{"error":"FID missing"}');
-    }
+    if (!fid) return res.status(400).send('{"error":"FID missing"}');
 
     // Ensure player exists
     await pool.query(
-      `INSERT INTO player_rewards (fid)
-       VALUES ($1)
-       ON CONFLICT (fid) DO NOTHING;`,
+      `INSERT INTO player_rewards (fid) VALUES ($1) ON CONFLICT (fid) DO NOTHING;`,
       [fid]
     );
 
     // Get current state
-    const { rows } = await pool.query(
-      `SELECT virtual_balance, withdrawal_address
-       FROM player_rewards
-       WHERE fid = $1;`,
+    const result = await pool.query(
+      `SELECT virtual_balance, withdrawal_address FROM player_rewards WHERE fid = $1;`,
       [fid]
     );
-    const balance = rows[0].virtual_balance;
-    let withdrawalAddress = rows[0].withdrawal_address;
+    const { virtual_balance: balance, withdrawal_address: withdrawalAddressStored } = result.rows[0];
+    let withdrawalAddress = withdrawalAddressStored;
 
     const MIN_WITHDRAWAL = 20;
     const REWARD_AMOUNT = 5;
     const actionIdx = parseInt(buttonIndex ?? button_index);
+    const input = inputText ?? input_text;
 
     // 1) Save withdrawal address if provided
-    const input = inputText ?? input_text;
     if (!withdrawalAddress && input) {
       withdrawalAddress = input;
       await pool.query(
-        `UPDATE player_rewards
-         SET withdrawal_address = $2
-         WHERE fid = $1;`,
+        `UPDATE player_rewards SET withdrawal_address = $2 WHERE fid = $1;`,
         [fid, withdrawalAddress]
       );
       return res.type('html').send(`
@@ -87,11 +78,10 @@ app.post('/api/frame', async (req, res) => {
     }
 
     // 3) Handle on-chain withdrawal
-    if (withdrawalAddress && balance >= MIN_WITHDRAWAL && actionIdx === 1) {
-      // Convert balance to token units
+    if (balance >= MIN_WITHDRAWAL && actionIdx === 1) {
+      // Calculate amount
       const decimals = await token.decimals();
       const amount = ethers.utils.parseUnits(balance.toString(), decimals);
-
       let tx;
       try {
         tx = await token.transfer(withdrawalAddress, amount);
@@ -109,9 +99,7 @@ app.post('/api/frame', async (req, res) => {
 
       // Reset off-chain balance
       await pool.query(
-        `UPDATE player_rewards
-         SET virtual_balance = 0
-         WHERE fid = $1;`,
+        `UPDATE player_rewards SET virtual_balance = 0 WHERE fid = $1;`,
         [fid]
       );
 
@@ -128,10 +116,7 @@ app.post('/api/frame', async (req, res) => {
     // 4) Claim off-chain reward
     if (actionIdx === 1) {
       const upd = await pool.query(
-        `UPDATE player_rewards
-         SET virtual_balance = virtual_balance + $2
-         WHERE fid = $1
-         RETURNING virtual_balance;`,
+        `UPDATE player_rewards SET virtual_balance = virtual_balance + $2 WHERE fid = $1 RETURNING virtual_balance;`,
         [fid, REWARD_AMOUNT]
       );
       const newBal = upd.rows[0].virtual_balance;
@@ -139,12 +124,12 @@ app.post('/api/frame', async (req, res) => {
         <!doctype html><html><head>
           <meta name="fc:frame" content='{"version":"1","title":"¡Reclamado!","icon":"🎉","buttonText":"Claim again"}'/>
         </head><body style="font-family:sans-serif;text-align:center;">
-          <h1>✅ Has reclamado ${REWARD_AMOUNT} tokens</h1>
+          <h1>✅ ¡Has reclamado ${REWARD_AMOUNT} tokens!</h1>
           <p>Nuevo saldo: <strong>${newBal}</strong> tokens</p>
         </body></html>`);
     }
 
-    // 5) Insufficient balance
+    // 5) Insufficient balance for withdrawal
     if (balance < MIN_WITHDRAWAL) {
       const falta = MIN_WITHDRAWAL - balance;
       return res.type('html').send(`
@@ -156,7 +141,7 @@ app.post('/api/frame', async (req, res) => {
         </body></html>`);
     }
 
-    // 6) Default: show request withdrawal
+    // 6) Default: show request withdrawal with no action yet
     return res.type('html').send(`
       <!doctype html><html><head>
         <meta name="fc:frame" content='{"version":"1","title":"Retirar","icon":"💸","buttonText":"Request Withdrawal"}'/>
