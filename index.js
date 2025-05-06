@@ -13,22 +13,27 @@ const pool = new Pool({
 app.use(express.json());
 
 app.post('/api/frame', async (req, res) => {
+  // 1) Para depuración
   console.log('▶️ Frame payload:', JSON.stringify(req.body));
-  const { fid, buttonIndex, button_index } = req.body;
 
-    if (!fid) return res.status(400).send('{"error":"FID missing"}');
+  try {
+    const { fid, buttonIndex, button_index } = req.body;
+    if (!fid) {
+      return res.status(400).send('{"error":"FID missing"}');
+    }
 
-    // 1) Asegura registro
+    // 2) Asegurar que el jugador existe
     await pool.query(`
       INSERT INTO player_rewards (fid)
       VALUES ($1) ON CONFLICT (fid) DO NOTHING;
     `, [fid]);
 
-    // 2) Detecta Claim (buttonIndex = 1)
-    const isClaim = (buttonIndex == 1) || (button_index == 1);
+    // 3) Detectar Claim (Farcaster suele enviar buttonIndex=1)
+    const claimIndex = buttonIndex ?? button_index;
+    const isClaim = parseInt(claimIndex) === 1;
 
     if (isClaim) {
-      // Reclamación: +5 tokens
+      // +5 tokens al pulsar "Claim"
       const { rows } = await pool.query(`
         UPDATE player_rewards
         SET virtual_balance = virtual_balance + 5
@@ -36,6 +41,7 @@ app.post('/api/frame', async (req, res) => {
         RETURNING virtual_balance;
       `, [fid]);
       const newBalance = rows[0].virtual_balance;
+
       return res
         .set('Content-Type','text/html')
         .send(`
@@ -56,14 +62,15 @@ app.post('/api/frame', async (req, res) => {
           </html>`);
     }
 
-    // 3) Si no es Claim, mostrar saldo con el botón
+    // 4) Si no es Claim, mostrar saldo actual y botón
     const { rows } = await pool.query(`
       SELECT virtual_balance
       FROM player_rewards
       WHERE fid = $1;
     `, [fid]);
     const balance = rows[0]?.virtual_balance ?? 0;
-    res
+
+    return res
       .set('Content-Type','text/html')
       .send(`
         <!doctype html>
@@ -83,8 +90,8 @@ app.post('/api/frame', async (req, res) => {
         </html>`);
   } catch (err) {
     console.error("Error en /api/frame:", err);
-    res.status(500).send('{"error":"Internal server error"}');
+    return res.status(500).send('{"error":"Internal server error"}');
   }
 });
 
-app.listen(port, () => console.log(`Servidor en http://localhost:${port}`));
+app.listen(port, () => console.log(`Servidor corriendo en http://localhost:${port}`));
