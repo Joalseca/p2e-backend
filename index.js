@@ -1,4 +1,8 @@
 require('dotenv').config();
+
+// Verificar ruta del fichero que se está ejecutando
+console.log('🛠️ Ejecutando:', __filename);
+
 const express = require('express');
 const { Pool } = require('pg');
 
@@ -14,49 +18,42 @@ app.use(express.json());
 
 app.post('/api/frame', async (req, res) => {
   try {
-    // 1️⃣ Extraer datos del payload
+    console.log('▶️ Payload:', JSON.stringify(req.body));
+
+    // 1️⃣ Extraer datos
     const { fid, buttonIndex, button_index, inputText, input_text } = req.body;
     if (!fid) return res.status(400).send('{"error":"FID missing"}');
 
-    // 2️⃣ Asegurar registro del jugador
+    // 2️⃣ Asegurar registro
     await pool.query(
-      `INSERT INTO player_rewards (fid)
-       VALUES ($1)
-       ON CONFLICT (fid) DO NOTHING;`,
+      `INSERT INTO player_rewards (fid) VALUES ($1) ON CONFLICT (fid) DO NOTHING;`,
       [fid]
     );
 
-    // 3️⃣ Leer estado actual del jugador
-    const { rows: info } = await pool.query(
-      `SELECT virtual_balance, withdrawal_address
-       FROM player_rewards
-       WHERE fid = $1;`,
+    // 3️⃣ Leer estado
+    const { rows } = await pool.query(
+      `SELECT virtual_balance, withdrawal_address FROM player_rewards WHERE fid = $1;`,
       [fid]
     );
-    const balance = info[0].virtual_balance;
-    let withdrawalAddress = info[0].withdrawal_address;
+    const balance = rows[0].virtual_balance;
+    let withdrawalAddress = rows[0].withdrawal_address;
 
-    // Constante: mínimo para retirar (ajústala)
-    const MIN_WITHDRAWAL = 20;
-
-    // 4️⃣ Si llega como Claim (buttonIndex=1) seguimos aumentando balance
-    const claimIndex = buttonIndex ?? button_index;
-    if (parseInt(claimIndex) === 1) {
-      const { rows } = await pool.query(
+    // 4️⃣ Claim: +5 tokens si buttonIndex (o button_index) = 1
+    const claimIdx = buttonIndex ?? button_index;
+    if (parseInt(claimIdx) === 1) {
+      const upd = await pool.query(
         `UPDATE player_rewards
          SET virtual_balance = virtual_balance + 5
          WHERE fid = $1
          RETURNING virtual_balance;`,
         [fid]
       );
-      const newBal = rows[0].virtual_balance;
-      return res.set('Content-Type','text/html').send(`
-        <!doctype html><html><head>
+      const newBal = upd.rows[0].virtual_balance;
+      return res.type('html').send(`
+        <!doctype html>
+        <html><head>
           <meta name="fc:frame" content='{
-            "version":"1",
-            "title":"¡Reclamado!",
-            "icon":"🎉",
-            "buttonText":"Claim again"
+            "version":"1","title":"¡Reclamado!","icon":"🎉","buttonText":"Claim again"
           }'/>
         </head><body style="font-family:sans-serif;text-align:center;">
           <h1>✅ ¡Has reclamado 5 tokens!</h1>
@@ -64,59 +61,49 @@ app.post('/api/frame', async (req, res) => {
         </body></html>`);
     }
 
-    // 5️⃣ Si no tienes withdrawal_address y llega inputText, lo guardamos
+    // 5️⃣ Guardar dirección si viene inputText
     const input = inputText ?? input_text;
     if (!withdrawalAddress && input) {
-      // Aquí podrías validar que input arranque con "0x" y longitud 42
       withdrawalAddress = input;
       await pool.query(
-        `UPDATE player_rewards
-         SET withdrawal_address = $2
-         WHERE fid = $1;`,
+        `UPDATE player_rewards SET withdrawal_address = $2 WHERE fid = $1;`,
         [fid, withdrawalAddress]
       );
-      return res.set('Content-Type','text/html').send(`
-        <!doctype html><html><head>
+      return res.type('html').send(`
+        <!doctype html>
+        <html><head>
           <meta name="fc:frame" content='{
-            "version":"1",
-            "title":"Dirección guardada",
-            "icon":"🏦",
-            "buttonText":"Ok"
+            "version":"1","title":"Dirección guardada","icon":"🏦","buttonText":"Ok"
           }'/>
         </head><body style="font-family:sans-serif;text-align:center;">
-          <h1>✅ Dirección guardada:</h1>
+          <h1>✅ Dirección guardada</h1>
           <p><code>${withdrawalAddress}</code></p>
         </body></html>`);
     }
 
-    // 6️⃣ Si no tienes withdrawal_address, mostrar input para pedirla
+    // 6️⃣ Si no hay dirección, pedimos que la ingrese
     if (!withdrawalAddress) {
-      return res.set('Content-Type','text/html').send(`
-        <!doctype html><html><head>
+      return res.type('html').send(`
+        <!doctype html>
+        <html><head>
           <meta name="fc:frame" content='{
-            "version":"1",
-            "title":"Configura Retiro",
-            "icon":"🏦",
-            "buttonText":"Guardar",
-            "inputPlaceholder":"0x…",
-            "buttonType":"text"
+            "version":"1","title":"Configurar Retiro","icon":"🏦",
+            "buttonText":"Guardar","inputPlaceholder":"0x…","buttonType":"text"
           }'/>
         </head><body style="font-family:sans-serif;text-align:center;">
-          <h1>Introduce tu dirección Base para retiros:</h1>
+          <h1>Introduce tu dirección Base:</h1>
         </body></html>`);
     }
 
-    // 7️⃣ A estas alturas tienes withdrawalAddress
-    //    — Si no llegas al mínimo, muestras cuánto falta
+    // 7️⃣ Si la tienes pero saldo insuficiente
+    const MIN_WITHDRAWAL = 20;
     if (balance < MIN_WITHDRAWAL) {
       const falta = MIN_WITHDRAWAL - balance;
-      return res.set('Content-Type','text/html').send(`
-        <!doctype html><html><head>
+      return res.type('html').send(`
+        <!doctype html>
+        <html><head>
           <meta name="fc:frame" content='{
-            "version":"1",
-            "title":"Saldo insuficiente",
-            "icon":"⚠️",
-            "buttonText":"Ok"
+            "version":"1","title":"Saldo insuficiente","icon":"⚠️","buttonText":"Ok"
           }'/>
         </head><body style="font-family:sans-serif;text-align:center;">
           <h1>Saldo: ${balance} tokens</h1>
@@ -124,22 +111,20 @@ app.post('/api/frame', async (req, res) => {
         </body></html>`);
     }
 
-    // 8️⃣ Si llegas al mínimo, mostramos botón "Request Withdrawal"
-    return res.set('Content-Type','text/html').send(`
-      <!doctype html><html><head>
+    // 8️⃣ Tienes dirección y saldo suficiente → botón Request Withdrawal
+    return res.type('html').send(`
+      <!doctype html>
+      <html><head>
         <meta name="fc:frame" content='{
-          "version":"1",
-          "title":"Retirar Tokens",
-          "icon":"💸",
-          "buttonText":"Request Withdrawal"
+          "version":"1","title":"Retirar","icon":"💸","buttonText":"Request Withdrawal"
         }'/>
       </head><body style="font-family:sans-serif;text-align:center;">
         <h1>Saldo: ${balance} tokens</h1>
         <p>Se enviarán a: <code>${withdrawalAddress}</code></p>
       </body></html>`);
 
-  } catch (err) {
-    console.error("Error en /api/frame:", err);
+  } catch (e) {
+    console.error('❌ Error en /api/frame:', e);
     res.status(500).send('{"error":"Internal server error"}');
   }
 });
