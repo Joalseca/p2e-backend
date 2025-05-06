@@ -13,8 +13,9 @@ const pool = new Pool({
 app.use(express.json());
 
 app.post('/api/frame', async (req, res) => {
-  try {
-    const { fid, buttonIndex, button_index } = req.body;
+  console.log('▶️ Frame payload:', JSON.stringify(req.body));
+  const { fid, buttonIndex, button_index } = req.body;
+
     if (!fid) return res.status(400).send('{"error":"FID missing"}');
 
     // 1) Asegura registro
